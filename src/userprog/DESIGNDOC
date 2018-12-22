@@ -1,0 +1,272 @@
+
+		     +--------------------------+
+       	       	     |		ESTR3102		
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Shifan ZHANG 1155092090@link.cuhk.edu.hk
+
+---- PRELIMINARIES ----
+
+>> Which files did you modify for this project?
+
+userprog/exception.c
+userprog/process.c
+userprog/syscall.c
+userprog/syscall.h
+threads/thread.c
+threads/thread.h
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+https://github.com/Waqee/Pintos-Project-2
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+typedef tid_t pid_t;
+
+struct thread
+  {
+    struct thread *parent;              /* Pointer to thread's parent. */
+    struct semaphore sema;              /* Semaphore to synchronize parent and child processes. */
+    struct list open_files;             /* Open file list for the thread process. */
+    int fd_next;                        /* File descriptor for the next open file. */
+    struct list child_processes;        /* Child process list for the thread process. */
+    struct thread_with_tid_copy *tt_ptr;/* Pointer of a structure which records necessary information 
+                                           of the process. */
+    struct semaphore child_finish_load; /* Semaphore to wait child load. */
+    int wait_child_pid;                 /* The child process pid which current process is waiting on. */
+  };
+
+/* This is a structure to record some necessary informations for parent process to retrieve. 
+   Each process has one pointer to its own struct thread_with_tid_copy. When the thread is 
+   terminated, the parent process could access this structure of child processes. When the 
+   parent process exits, all its children's thread_with_tid_copy are freed. */
+struct thread_with_tid_copy
+{
+  tid_t tid;                          /* Thread's id. */
+  bool is_finished;                   /* Whether the thread exited. */
+  bool should_be_waited;              /* Whether the thread should be waited. If it has been 
+                                         waited, the sys_wait () returns -1 immediately. */
+  int exit_status;                    /* Process's exit status. */
+  struct list_elem child_elem;        /* List element for child process list. */
+};  
+
+/* This structure stores some information of the files opened by processes. 
+   It is allocated when process opens a file, and deallocated when process exits. */
+struct proc_file
+{
+  int fd;                     /* File descriptor. */
+  char *name;                 /* Used for debugging. */
+  bool deny_write;            /* Whether process and write to file. */
+  struct file *fptr;          /* Pointer to struct file. */
+  struct list_elem elem;      /* List element for process's open_files list. */
+};
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+In function setup_stack (), the filename together with arguments is passed into it as file_name_, which is parsed by strtok_r() using " " as delimiter, storing the arguments in a array of strings, namely **token.
+To arrange the arguments in the right order, we write them to the stack pointed by **esp in reverse order.
+To avoid overflowing the stack page, 'struct thread' must not be too big. Secondly, kernel stack must not grow to be too large. Therefore, instead of allocate large non-static local variables in kernel functions, we use malloc() or palloc_get_page().
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+Because strtok_r() is a reentrant version of strtok().
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+The Unix approach consumes user memory and the Pintos approach consumes kernel memory. In Pintos, separating commands into a executable name and arguments require allocate memory from kernel pool. Running out of pages in the user pool just causes user program to page, but running out of pages in the kernel pool will cause many failures because so many kernel functions need to obtain memory. (ref: Pintos 4.4FAQ)
+Also, the Unix approach is more efficiency. 
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+typedef tid_t pid_t;
+
+struct thread
+  {
+    struct thread *parent;              /* Pointer to thread's parent. */
+    struct semaphore sema;              /* Semaphore to synchronize parent and child processes. */
+    struct list open_files;             /* Open file list for the thread process. */
+    int fd_next;                        /* File descriptor for the next open file. */
+    struct list child_processes;        /* Child process list for the thread process. */
+    struct thread_with_tid_copy *tt_ptr;/* Pointer of a structure which records necessary information 
+                                           of the process. */
+    struct semaphore child_finish_load; /* Semaphore to wait child load. */
+    int wait_child_pid;                 /* The child process pid which current process is waiting on. */
+  };
+
+/* This is a structure to record some necessary informations for parent process to retrieve. 
+   Each process has one pointer to its own struct thread_with_tid_copy. When the thread is 
+   terminated, the parent process could access this structure of child processes. When the 
+   parent process exits, all its children's thread_with_tid_copy are freed. */
+struct thread_with_tid_copy
+{
+  tid_t tid;                          /* Thread's id. */
+  bool is_finished;                   /* Whether the thread exited. */
+  bool should_be_waited;              /* Whether the thread should be waited. If it has been 
+                                         waited, the sys_wait () returns -1 immediately. */
+  int exit_status;                    /* Process's exit status. */
+  struct list_elem child_elem;        /* List element for child process list. */
+};  
+
+/* This structure stores some information of the files opened by processes. 
+   It is allocated when process opens a file, and deallocated when process exits. */
+struct proc_file
+{
+  int fd;                     /* File descriptor. */
+  char *name;                 /* Used for debugging. */
+  bool deny_write;            /* Whether process and write to file. */
+  struct file *fptr;          /* Pointer to struct file. */
+  struct list_elem elem;      /* List element for process's open_files list. */
+};
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+When a process opens a file, a file descriptor is assigned to the file recorded in the process's file descriptor table.
+File descriptors are unique just within a single process.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+Step 1. Validate the arguments.
+Step 2. Find the struct pfile with the same fd as file descriptor given by the user.
+Step 3. Acquire the file system lock to avoid race condition.
+Step 4. Call the corresponding file reading and writing functions.
+Step 5. Release the file system lock and returns.
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+In pintos, the address is separated into two sections: the twenty most significant bits form the page number, the last twelve bits form the offset. The page number is further subdivided to two parts: the 10 most significant bits are page directory index, the next 10 bits are page table index. 
+In the first case, the least number of inspections of the page table: 2, the greatest number of inspections of the page table:
+2048.
+In the second case, the result is the same.
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+If the child process has been waited before, wait () returns -1 immediately.
+If not, and the child process does not terminate, the parent process will wait for its termination. The implementation is to use a semaphore. In wait(), the function sema_down () is called. In waited child process's sys_exit(), the fucntion sema_up () is called.
+If the child has not been waited before, however it has terminated when parent process wait for it, the wait () returns the child's exit status, which is stored in structure thread_with_tid_copy.
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+Access to memory at a user-specified address which fails due to bad pointer value will result in user exception. The process will be terminated by exception handler kill () which calls sys_exit (-1). Eventually the process_exit () is called, in which all temporarily allocated resources are freed.
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+The exec syscall will call process_execute () and return its return value. To ensure the new executable has completed loading before process_execute () returns, we use a semaphore. After calling thread_create () in process_execute (), sema_down () is called to wait. In start_process (), the child process calls sema_up () after load () returns.
+If load success, process_execute () returns child process's tid. If load failure, exit_status of child process's thread_with_tid_copy is set to -10 in start_process(), and process_execute () returns -1 when exit_status is -10.
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+Case P calls wait(C) before C exits:
+In Wait (C), sema_down () is called. In child process's sys_exit (), sema_up () is called. To avoid race conditions, sema_up () will be called after the child process's thread_with_tid_copy stores its state (is_finished) and exit status.
+Case P calls wait(C) after C exits:
+In Wait(C), the exit_status is returned without waiting.
+In these two cases, all resources are guaranteed to be freed in process_exit ().
+If P terminates without waiting, C has no parent when it terminates. Therefore, sema_up () will not be called. Both parent and child process's resources are guaranteed to be freed, because each process will free all resources in process_exit ().
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+If some user exception is caught, only the fault user process is terminated. Other processes won't be affected.
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+My design for file descriptors cannot reuse the file descriptors. If a file is closed, its file descriptor cannot be used by other open files. 
+The advantage is its efficiency in assigning file descriptors for each open file.
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+In my implementation, pid_t is defined to be same type of tid_t.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
