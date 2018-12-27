@@ -3,14 +3,22 @@
 #include <stdio.h>
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
+#include "threads/pte.h"
+#include "threads/palloc.h"
 #include "threads/thread.h"
 #include "userprog/syscall.h"
+#include "userprog/process.h"
+#include "userprog/pagedir.h"
+#include "threads/vaddr.h"
+
+#define DEBUG false
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
+static bool install_page (void *upage, void *kpage, bool writable);
 
 /* Registers handlers for interrupts that can be caused by user
    programs.
@@ -110,6 +118,22 @@ kill (struct intr_frame *f)
     }
 }
 
+bool valid_page(void *fault_addr, struct intr_frame *f)
+{
+  if (DEBUG) printf("Validating fault_addr...\n");
+  if (fault_addr && fault_addr > (void*)0x08048000 && fault_addr < PHYS_BASE
+    && (int*)f->esp - (int*)fault_addr <= 32)
+  {
+    if(DEBUG) printf("valid_page returns TRUE\n");
+    return true;
+  }
+  else
+  {
+    if(DEBUG) printf("valid_page returns FALSE\n");
+    return false;    
+  }
+}
+
 /* Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.
@@ -150,14 +174,49 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-  kill (f);
+  if (valid_page(fault_addr, f))
+  {
+    if(DEBUG) printf("Page valid! Fetch a frame and access memory.\n");
+
+    void* upage = pg_round_down(fault_addr);
+    void* kpage = (void*)palloc_get_page(PAL_USER | PAL_ZERO);
+    bool writable = true;
+    bool success = install_page(upage, kpage, writable);
+    if(!success)
+    {
+      kill(f);
+    }
+  }
+  else
+  {
+    /* To implement virtual memory, delete the rest of the function
+       body, and replace it with code that brings in the page to
+       which fault_addr refers. */
+    printf ("Page fault at %p: %s error %s page in %s context.\n",
+            fault_addr,
+            not_present ? "not present" : "rights violation",
+            write ? "writing" : "reading",
+            user ? "user" : "kernel");
+    kill (f);
+  }
 }
 
+/* Adds a mapping from user virtual address UPAGE to kernel
+   virtual address KPAGE to the page table.
+   If WRITABLE is true, the user process may modify the page;
+   otherwise, it is read-only.
+   UPAGE must not already be mapped.
+   KPAGE should probably be a page obtained from the user pool
+   with palloc_get_page().
+   Returns true on success, false if UPAGE is already mapped or
+   if memory allocation fails. */
+static bool
+install_page (void *upage, void *kpage, bool writable)
+{
+  struct thread *t = thread_current ();
+
+  /* Verify that there's not already a page at that virtual
+     address, then map our page there. */
+  return (pagedir_get_page (t->pagedir, upage) == NULL
+          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
