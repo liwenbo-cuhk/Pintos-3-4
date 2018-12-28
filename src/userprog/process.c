@@ -21,6 +21,9 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
+#include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -209,7 +212,10 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
-    
+  for (int i = 0; i < thread_current ()->mapid_next; i++)
+  {
+    sys_munmap (i);
+  }
   /* Close all open files. */
   sys_close_all_open_file (thread_current ()); 
   /* Clean child_processes list. */
@@ -217,8 +223,7 @@ process_exit (void)
   {
     struct thread_with_tid_copy *tt = list_entry(list_pop_front (&thread_current ()->child_processes), struct thread_with_tid_copy, child_elem);
     free (tt);
-  }
-
+  }      
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -232,7 +237,8 @@ process_exit (void)
          directory, or our active page directory will be one
          that's been freed (and cleared). */
       cur->pagedir = NULL;
-      pagedir_activate (NULL);
+      pagedir_activate (NULL);   
+      virtual_memory_destroy (thread_current ()->supplement_table);
       pagedir_destroy (pd);
     } 
 }
@@ -318,9 +324,7 @@ struct Elf32_Phdr
 
 static bool setup_stack (void **esp, const char *file_name);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
-static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
-                          uint32_t read_bytes, uint32_t zero_bytes,
-                          bool writable);
+
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -421,7 +425,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
               if (!load_segment (file, file_page, (void *) mem_page,
-                                 read_bytes, zero_bytes, writable))
+                                 read_bytes, zero_bytes, writable, -1))
                 goto done;
             }
           else
@@ -442,14 +446,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
  done:
   //modified
   /* Deny write to executables. */
-  /* I don't understand why deny_write true while in sys_write () it becomes false. */
-  //file_deny_write (file);
+  file_deny_write (file);
   //printf ("%s: deny_write: %d\n", exec_name, is_file_deny_write (file));
   free (exec_name);
   /* We arrive here whether the load is successful or not. */
   file_close (file);
 
   filesys_lock_release (&filesys_lock);
+
   return success;
 }
 
@@ -516,9 +520,8 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
 
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
-static bool
-load_segment (struct file *file, off_t ofs, uint8_t *upage,
-              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable, mapid_t mapid) 
 {
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
@@ -534,9 +537,13 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
+      uint8_t *kpage = virtual_memory_frame_alloc (PAL_ZERO, upage);
+      virtual_memory_frame_install (thread_current ()->supplement_table, upage, kpage, writable, mapid, file);
+
       if (kpage == NULL)
+      {
         return false;
+      }
 
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
@@ -547,7 +554,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      if (!install_page (upage, kpage, writable) )
         {
           palloc_free_page (kpage);
           return false; 
@@ -557,7 +564,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+
     }
+
   return true;
 }
 
@@ -566,11 +575,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp, const char *file_name_) 
 {
-  uint8_t *kpage;
+  uint8_t *kpage, *upage = ((uint8_t *) PHYS_BASE) - PGSIZE;
   bool success = false;
 
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  
+  if (kpage == NULL)
+  {
+    kpage = virtual_memory_frame_alloc (PAL_ZERO, upage);
+    virtual_memory_frame_install (thread_current ()->supplement_table, upage, kpage, true, -1, NULL);
+  }
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);

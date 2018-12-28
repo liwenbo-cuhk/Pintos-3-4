@@ -1,5 +1,6 @@
 #include <hash.h>
 #include "vm/page.h"
+#include "threads/thread.h"
 
 // THe hash function for frame mapping, the key is kaddr
 static unsigned hash_function(const struct hash_elem *elem, void *aux UNUSED){
@@ -40,21 +41,28 @@ void virtual_memory_destroy(struct page_table *supplement_table){
   free (supplement_table);
 }
 
-struct page_table* virtual_memroy_table_create(void){
+struct page_table* virtual_memory_table_create(void){
   struct page_table *supplement_table = (struct page_table*) malloc(sizeof(struct page_table));
   hash_init (&supplement_table->page_map, hash_function, less_check, NULL);
   return supplement_table;
 }
 
-bool virtual_memory_frame_install(struct page_table *supplement_table, void *virtual_address_page, void *kernel_page){
+bool virtual_memory_frame_install(struct page_table *supplement_table, void *virtual_address_page, void *kernel_page, bool writable, mapid_t mapid, struct file *file){
+  
   struct page_table_entry *target_page_table_entry;
-  struct hash_elem *prev_elem = hash_insert (&supplement_table->page_map, &target_page_table_entry->elem);
   target_page_table_entry = (struct page_table_entry *) malloc(sizeof(struct page_table_entry));
   target_page_table_entry->index_to_swap = -1;
   target_page_table_entry->kernel_page = kernel_page;
   target_page_table_entry->status = FRAME;
   target_page_table_entry->virtual_address_page = virtual_address_page;
   target_page_table_entry->dirty = false;
+  target_page_table_entry->writable = writable;
+  target_page_table_entry->mapid = mapid;
+  target_page_table_entry->file = file;
+  list_push_back (&thread_current ()->sup_list, &target_page_table_entry->lelem);
+  if (mapid != -1)
+    target_page_table_entry->mapped = true;
+  struct hash_elem *prev_elem = hash_insert (&supplement_table->page_map, &target_page_table_entry->elem);
   if (prev_elem){
     free (target_page_table_entry);
     return false;
@@ -77,7 +85,7 @@ void virtual_memory_page_unpin(struct page_table *supplement_table, void *page){
   if (FRAME == target_page_table_entry->status) virtual_memory_frame_unpin (target_page_table_entry->kernel_page);
 }
 
-bool virtual_memroy_page_install(struct page_table *supplement_table, void *virtual_address_page){
+bool virtual_memory_page_install(struct page_table *supplement_table, void *virtual_address_page){
   struct page_table_entry *target_page_table_entry = (struct page_table_entry *) malloc(sizeof(struct page_table_entry));
   struct hash_elem *prev_elem = hash_insert (&supplement_table->page_map, &target_page_table_entry->elem);
   target_page_table_entry->virtual_address_page = virtual_address_page;
@@ -135,7 +143,12 @@ bool virtual_memory_entry_flag(struct page_table *supplement_table, void *page){
 }
 
 bool virtual_memory_flag_setup(struct page_table *supplement_table, void *page, bool value){
+  ASSERT (supplement_table != NULL);
   struct page_table_entry *target_page_table_entry = virtual_memory_search(supplement_table, page);
+  if (target_page_table_entry == NULL)
+  {
+    return false;
+  }
   target_page_table_entry->dirty = target_page_table_entry->dirty || value;
   return true;
 }
@@ -143,6 +156,7 @@ bool virtual_memory_flag_setup(struct page_table *supplement_table, void *page, 
 
 
 struct page_table_entry* virtual_memory_search (struct page_table *supplement_table, void *page){
+  ASSERT (supplement_table != NULL && page != NULL);
   struct page_table_entry target_page_table_entry_temp;
   target_page_table_entry_temp.virtual_address_page = page;
   struct hash_elem *elem = hash_find (&supplement_table->page_map, &target_page_table_entry_temp.elem);
@@ -162,7 +176,7 @@ bool virtual_memory_page_load(struct page_table *supplement_table, int *pagedir,
   }else if(FRAME == target_page_table_entry->status) {
     return true;
   }
-  if(!frame_page) return false;
+  if(!frame_page) return false; 
   switch (target_page_table_entry->status){
   case FRAME:
     break;
@@ -185,8 +199,9 @@ bool virtual_memory_page_load(struct page_table *supplement_table, int *pagedir,
   if(pagedir_set_page(pagedir, virtual_address_page, frame_page, writable)){
     target_page_table_entry->status = FRAME;
     target_page_table_entry->kernel_page = frame_page;
+    target_page_table_entry->writable = writable;
     pagedir_set_dirty (pagedir, frame_page, false);
-    virtual_memory_frame_unpin(frame_page);
+    //virtual_memory_frame_unpin(frame_page);
     return true;
   }else{
     virtual_memory_frame_free(frame_page);
@@ -232,3 +247,60 @@ bool virtual_memory_unmap(struct page_table *supplement_table, int *pagedir, voi
   return true;
 }
 
+bool
+is_writable (void *vaddr)
+{
+  struct page_table_entry *pte = virtual_memory_search (thread_current ()->supplement_table, vaddr);
+  if (pte != NULL)
+  {
+    return pte->writable;
+  }
+  return false;
+}
+
+mapid_t pte_get_mapid (struct page_table_entry *pte)
+{
+  return pte->mapid;
+}
+struct file *pte_get_file (struct page_table_entry *pte)
+{
+  return pte->file;
+}
+void *pte_get_uva (struct page_table_entry *pte)
+{
+  return pte->virtual_address_page;
+}
+
+void pte_set_mapped (struct page_table_entry *pte, bool mapped)
+{
+  pte->mapped = mapped;
+}
+
+bool pte_mapped (void *uva)
+{
+  struct page_table_entry *pte = virtual_memory_search (thread_current ()->supplement_table, uva);
+  if (pte != NULL && !pte->mapped && pte->mapid != -1)
+  {
+    return true;
+  }
+  return false;
+}
+
+struct page_table_entry *get_pte (struct list_elem *iter)
+{
+  return list_entry (iter, struct page_table_entry, lelem);
+}
+
+void pte_unmap (void *uva)
+{
+  struct page_table_entry *pte = virtual_memory_search (thread_current ()->supplement_table, uva);
+  if (pte != NULL && pte->mapped)
+  {
+    sys_munmap (pte->mapid);
+  }
+}
+
+bool pte_get_mapped (struct page_table_entry *pte)
+{
+  return pte->mapped;
+}

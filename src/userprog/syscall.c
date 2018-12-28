@@ -14,16 +14,22 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include <string.h>
+#include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
 #define USER_BASE 0x08048000
 typedef tid_t pid_t;
 
 static void syscall_handler (struct intr_frame *);
 static bool is_good_ptr (int* vaddr);
+static struct proc_file* get_pfile (int fd);
 void sys_exit (int status);
 pid_t sys_exec (const char* file_name);
 int sys_write (int fd, const void* buffer, unsigned size);
 int sys_read (int fd, const void* buffer, unsigned size);
 void sys_close (int fd);
+void sys_munmap (mapid_t mapping);
+mapid_t sys_mmap (int fd, void *addr);
 void
 syscall_init (void) 
 {
@@ -60,6 +66,7 @@ syscall_handler (struct intr_frame *f)
   	{
       if (!is_good_ptr (p + 1) || !is_good_ptr ((int*)*(p + 1)))
       {
+
         sys_exit (-1);
       }
       const char *file_name = (const char*)*(p + 1);
@@ -70,6 +77,7 @@ syscall_handler (struct intr_frame *f)
   	{
       if (!is_good_ptr (p + 1))
       {
+
         sys_exit (-1);
       }
       pid_t pid = (pid_t)*(p + 1);
@@ -105,6 +113,7 @@ syscall_handler (struct intr_frame *f)
   	{
   		if (!is_good_ptr (p + 1) || !is_good_ptr ((int*)*(p + 1)))
   		{
+
   			sys_exit (-1);
   		}
   		const char *file_name = (const char*)*(p + 1);
@@ -135,6 +144,7 @@ syscall_handler (struct intr_frame *f)
   	{
       if (!is_good_ptr (p + 1))
       {
+
         sys_exit (-1);
       }
       int fd = *(p + 1);
@@ -177,6 +187,7 @@ syscall_handler (struct intr_frame *f)
   		int fd = *(p + 5);
   		void* buffer = (void*)*(p + 6);
   		unsigned size = (unsigned)*(p + 7);
+
       /* If the file descriptor is invalid, exit -1. */
       if (fd != STDOUT_FILENO && fd < 2)
       {
@@ -247,6 +258,27 @@ syscall_handler (struct intr_frame *f)
       sys_close (fd);
   		break;
   	}
+    case SYS_MMAP:
+    {
+      if (!is_user_vaddr ((const void*)(p + 5)) || !is_user_vaddr ((const void*)*(p + 5)))
+      {
+        sys_exit (-1);
+      }
+      int fd = (int)*(p + 4);
+      void *addr = (void*)*(p + 5);
+      f->eax = sys_mmap (fd, addr);
+      break;
+    }
+    case SYS_MUNMAP:
+    {
+      if (!is_good_ptr (p + 1))
+      {
+        sys_exit (-1);
+      }
+      mapid_t mapping = (mapid_t)*(p + 1);
+      sys_munmap (mapping);
+      break;
+    }
   }  
 }
 
@@ -274,23 +306,10 @@ sys_write (int fd, const void* buffer, unsigned size)
       struct proc_file *pfile = list_entry (iter, struct proc_file, elem);
       if (pfile != NULL && pfile->fd == fd)
       {
-        /* Deny write to excutables. */
-        if (strcmp (thread_current ()->name, pfile->name) == 0)
-        {
-          pfile->deny_write = true;
-        }
-        if (strcmp (thread_current ()->parent->name, pfile->name) == 0)
-        {
-          pfile->deny_write = true;
-        }
-
-        if (!pfile->deny_write)
-        {
           filesys_lock_acquire (&filesys_lock);
           ret = file_write (pfile->fptr, buffer, size);
           filesys_lock_release (&filesys_lock);
-        }
-        break;
+          break;
       }
     }
   }
@@ -382,4 +401,108 @@ is_good_ptr (int *vaddr)
 	if (ret)
       ret = pagedir_get_page (thread_current ()->pagedir, vaddr) == NULL ? false : true;
     return ret;
+}
+
+mapid_t 
+sys_mmap (int fd, void *addr)
+{
+  if (fd < 2 || addr == 0 || (int)addr % PGSIZE != 0)
+  {
+    return -1;
+  }
+  mapid_t ret = -1;
+  struct proc_file *pfile = get_pfile (fd);
+  if (pfile != NULL)
+  {
+    filesys_lock_acquire (&filesys_lock);
+    void *upage = pg_round_down (addr), *check_upage;
+    uint32_t read_bytes, zero_bytes;
+    read_bytes = file_length (pfile->fptr);
+    if (read_bytes == 0)
+    {
+      filesys_lock_release (&filesys_lock);
+      return -1;
+    }
+    zero_bytes = PGSIZE - read_bytes % PGSIZE;
+    /* Check if the contiguous memory is not present.
+       If any page is present, mapping should fail.*/
+    check_upage = upage;
+    while (check_upage < upage + read_bytes + zero_bytes)
+    {
+      if (pagedir_get_page (thread_current ()->pagedir, check_upage) != NULL)
+      {
+        ret = -2;
+        break;
+      }
+      check_upage += PGSIZE;
+    } 
+
+    if (ret != -2)
+    {
+      /* We need to hold the filesys_lock when entering load_segment (). */
+      ret = load_segment (pfile->fptr, 0, upage, read_bytes, zero_bytes, true, thread_current ()->mapid_next) == true ? 1 : -2;
+    }
+    filesys_lock_release (&filesys_lock);
+
+  }
+  /* Map the file successfully. Increment mapid_next. */
+  if (ret == 1)
+  {
+    ret = thread_current ()->mapid_next++;
+  }
+  return ret >= 0 ? ret : -1;
+}
+
+void 
+sys_munmap (mapid_t mapping)
+{
+  struct thread *t = thread_current ();
+  struct list_elem *iter = list_begin (&t->sup_list);
+  int cnt = 0;
+  struct page_table_entry *spte;
+  filesys_lock_acquire (&filesys_lock);
+  while (iter != list_end (&t->sup_list))
+  {
+    struct list_elem *iter_this = iter;
+    iter = list_next (iter);
+
+    spte = get_pte (iter_this); 
+    /* If the page is modified, we write the data of page back
+       to the mapped file.*/
+    if (pte_get_mapid (spte) == mapping && pagedir_is_dirty (t->pagedir, pte_get_uva(spte)))
+    {
+      cnt++ ; 
+      if (cnt == 1)
+      {
+        file_seek (pte_get_file (spte), 0);
+      }
+      file_write (pte_get_file (spte), pte_get_uva(spte), PGSIZE);
+    }
+    if (pte_get_mapid (spte) == mapping)
+    {
+      pte_set_mapped (spte, false);
+      /* Mark page "not present" in pd. Later accesses will fault. */
+      pagedir_clear_page(t->pagedir, pte_get_uva(spte));
+    }
+  }
+  if (cnt > 0)
+  {
+    file_seek (pte_get_file (spte), 0);
+  }
+
+  filesys_lock_release (&filesys_lock);
+}
+
+static struct proc_file*
+get_pfile (int fd)
+{
+  for (struct list_elem *iter = list_begin (&thread_current ()->open_files); iter != list_end (&thread_current ()->open_files); iter = list_next (iter))
+  {
+    struct proc_file *pfile = list_entry (iter, struct proc_file, elem);
+    if (pfile != NULL && pfile->fd == fd)
+    {
+      return pfile;
+    }
+  }
+  return NULL;
 }

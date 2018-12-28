@@ -5,6 +5,11 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/synch.h"
+#include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
+
+typedef int mapid_t;
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -103,6 +108,7 @@ struct thread
                                            of the process. */
     struct semaphore child_finish_load; /* Semaphore to wait child load. */
     int wait_child_pid;                 /* The child process pid which current process is waiting on. */
+    mapid_t mapid_next;
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
@@ -112,9 +118,9 @@ struct thread
 #endif
 
     // These are the two variables added for the project 3
-    struct supplemental_page_table *supplement_table;   
+    struct page_table *supplement_table;   
     struct list mmap_list;              
-
+    struct list sup_list;
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };

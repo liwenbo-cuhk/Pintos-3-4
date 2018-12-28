@@ -6,6 +6,7 @@
 #include <list.h>
 #include <stdio.h>
 #include "vm/frame.h"
+#include "vm/page.h"
 #include "threads/thread.h"
 #include "threads/malloc.h"
 #include "threads/palloc.h"
@@ -14,8 +15,11 @@
 struct frame_table_entry* clock_frame_next(void){
   if (clk_ptr == list_end(&frame_list) || !clk_ptr){
     clk_ptr = list_begin (&frame_list);
+    clk_ptr2 = list_next (clk_ptr);
   }else{
-    clk_ptr = list_next (clk_ptr);
+    clk_ptr = clk_ptr2;
+    clk_ptr2 = list_next (clk_ptr2);
+
   }
   struct frame_table_entry *the_entry = list_entry(clk_ptr, struct frame_table_entry, lelem);
   return the_entry;
@@ -38,12 +42,12 @@ static struct frame_table_entry* choose_frame_to_swap(int *pagedir){
   // NO INFINITE LOOPING ALLOWED, at most twice
   for(size_t looping_var = 0; looping_var <= n*2; ++looping_var){
     struct frame_table_entry *the_entry = clock_frame_next();
-    if(pagedir_is_accessed(pagedir, the_entry->virtual_address_page)){
-      pagedir_set_accessed(pagedir, the_entry->virtual_address_page, false);
-      continue;
-    }else if(the_entry->pinned){
-      continue;
-    }
+    // if(pagedir_is_accessed(pagedir, the_entry->virtual_address_page)){
+    //   pagedir_set_accessed(pagedir, the_entry->virtual_address_page, false);
+    //   continue;
+    // }else if(the_entry->pinned){
+    //   continue;
+    // }
     return the_entry;
   }
 }
@@ -109,13 +113,18 @@ void* virtual_memory_frame_alloc(enum palloc_flags flags, void *virtual_address_
   if (!frame_page){
     // swap the page first
     struct frame_table_entry *target_frame_swaped = choose_frame_to_swap( thread_current()->pagedir );
+    
     pagedir_clear_page(target_frame_swaped->t->pagedir, target_frame_swaped->virtual_address_page);
+    //pte_unmap (target_frame_swaped->virtual_address_page);
     bool flag = false;
     flag = flag || pagedir_is_dirty(target_frame_swaped->t->pagedir, target_frame_swaped->virtual_address_page);
     flag = flag || pagedir_is_dirty(target_frame_swaped->t->pagedir, target_frame_swaped->kernel_page);
     int swap_idx = virtual_memory_swap_out( target_frame_swaped->kernel_page );
+
     virtual_memory_swap_setup(target_frame_swaped->t->supplement_table, target_frame_swaped->virtual_address_page, swap_idx);
+
     virtual_memory_flag_setup(target_frame_swaped->t->supplement_table, target_frame_swaped->virtual_address_page, flag);
+
     vm_frame_do_free(target_frame_swaped->kernel_page, true);
     frame_page = palloc_get_page (PAL_USER | flags);
   }

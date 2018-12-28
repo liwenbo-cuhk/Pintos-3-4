@@ -16,6 +16,9 @@
 #include "userprog/process.h"
 #include "userprog/syscall.h"
 #endif
+#include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -477,7 +480,10 @@ init_thread (struct thread *t, const char *name, int priority)
   sema_init (&t->child_finish_load, 0);
   t->fd_next = 2;               /* fd 0 and 1 are reserved. */
   t->wait_child_pid = -1;
-
+  t->mapid_next = 0;
+  if (strcmp ("main", t->name) != 0)
+    t-> supplement_table = virtual_memory_table_create();
+  list_init (&t->sup_list);
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
 }

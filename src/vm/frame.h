@@ -10,6 +10,7 @@
 // THe list of frames, designed for clock eviction, first is the list, sec is the pointer
 static struct list frame_list; 
 static struct list_elem *clk_ptr;
+static struct list_elem *clk_ptr2;
 // Here we define the lock for synchronizaion of frame operations
 static struct lock frame_lock;
 // This is the mapping from physical address to the frame table entry
