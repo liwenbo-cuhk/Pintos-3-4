@@ -111,6 +111,10 @@ struct thread
     uint32_t *pagedir;                  /* Page directory. */
 #endif
 
+    // These are the two variables added for the project 3
+    struct supplemental_page_table *supplement_table;   
+    struct list mmap_list;              
+
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
