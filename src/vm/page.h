@@ -13,11 +13,11 @@
 #include "filesys/off_t.h"
 #include "threads/malloc.h"
 
-struct supplemental_page_table{struct hash page_map;};
+struct page_table{struct hash page_map;};
 // THe stage of the page
-enum page_status {ALL_ZERO, ON_FRAME, ON_SWAP, FROM_FILESYS};
+enum page_status {ZEROS, FRAME, SWAP, FILESYSTEM};
 
-struct supplemental_page_table_entry{
+struct page_table_entry{
     void *kernel_page;
     struct file *file;
     bool dirty;     
@@ -32,18 +32,18 @@ struct supplemental_page_table_entry{
   };
 
 
-bool vm_load_page(struct supplemental_page_table *supplement_table, int *pagedir, void *virtual_address_page);
-void vm_unpin_page(struct supplemental_page_table *supplement_table, void *page);
-bool vm_supt_install_frame (struct supplemental_page_table *supplement_table, void *virtual_address_page, void *kernel_page);
-bool vm_supt_set_dirty (struct supplemental_page_table *supplement_table, void *, bool);
-bool vm_supt_install_filesys (struct supplemental_page_table *supplement_table, void *page, struct file * file, off_t offset, int bytes_to_read, int no_bytes, bool writable);
-struct supplemental_page_table_entry* vm_supt_lookup (struct supplemental_page_table *supplement_table, void *);
-bool vm_supt_has_entry (struct supplemental_page_table *, void *page);
-void vm_pin_page(struct supplemental_page_table *supplement_table, void *page);
-struct supplemental_page_table* vm_supt_create (void);
-bool vm_supt_mm_unmap(struct supplemental_page_table *supplement_table, int *pagedir, void *page, struct file *f, off_t offset, size_t bytes);
-bool vm_supt_install_zeropage (struct supplemental_page_table *supplement_table, void *);
-bool vm_supt_set_swap (struct supplemental_page_table *supplement_table, void *, int);
-void vm_supt_destroy (struct supplemental_page_table *);
+bool virtual_memory_page_load(struct page_table *supplement_table, int *pagedir, void *virtual_address_page);
+void virtual_memory_page_unpin(struct page_table *supplement_table, void *page);
+bool virtual_memory_frame_install(struct page_table *supplement_table, void *virtual_address_page, void *kernel_page);
+bool virtual_memory_flag_setup(struct page_table *supplement_table, void *, bool);
+bool virtual_memory_file_system_install(struct page_table *supplement_table, void *page, struct file * file, off_t offset, int bytes_to_read, int no_bytes, bool writable);
+struct page_table_entry* virtual_memory_search (struct page_table *supplement_table, void *);
+bool virtual_memory_entry_flag(struct page_table *, void *page);
+void virtual_memory_page_pin(struct page_table *supplement_table, void *page);
+struct page_table* virtual_memory_table_create(void);
+bool virtual_memory_unmap(struct page_table *supplement_table, int *pagedir, void *page, struct file *f, off_t offset, size_t bytes);
+bool virtual_memory_page_install(struct page_table *supplement_table, void *);
+bool virtual_memory_swap_setup(struct page_table *supplement_table, void *, int);
+void virtual_memory_destroy(struct page_table *);
 
 #endif

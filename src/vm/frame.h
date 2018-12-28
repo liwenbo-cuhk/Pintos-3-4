@@ -9,7 +9,7 @@
 
 // THe list of frames, designed for clock eviction, first is the list, sec is the pointer
 static struct list frame_list; 
-static struct list_elem *clock_ptr;
+static struct list_elem *clk_ptr;
 // Here we define the lock for synchronizaion of frame operations
 static struct lock frame_lock;
 // This is the mapping from physical address to the frame table entry
@@ -31,11 +31,11 @@ struct frame_table_entry{
 };
 
 // THe following are the functions for Frame
-void vm_frame_unpin (void* kernel_page);
-void vm_frame_init (void);
-void* vm_frame_allocate (enum palloc_flags flags, void *virtual_address_page);
-void vm_frame_remove_entry (void*);
-void vm_frame_pin (void* kernel_page);
-void vm_frame_free (void*);
+void virtual_memory_frame_unpin (void* kernel_page);
+void virtual_memory_frame_init (void);
+void* virtual_memory_frame_alloc(enum palloc_flags flags, void *virtual_address_page);
+void virtual_memory_frame_entry_remove(void*);
+void virtual_memory_frame_pin(void* kernel_page);
+void virtual_memory_frame_free(void*);
 //  pintos -q run mmap-zero
 #endif
